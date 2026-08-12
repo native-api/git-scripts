@@ -39,7 +39,7 @@ EOF
 # ARG_VERSION([echo "git-prw $ts"])
 # ARG_OPTIONAL_SINGLE([protocol],[p],[force using a specific protocol for the new remote.\nSupported values are 'ssh' and 'https'.\nBy default, the same protocol is used as in REMOTE])
 # ARG_OPTIONAL_BOOLEAN([force],[f],[overwrite the branch if it exists])
-# ARG_OPTIONAL_ACTION([prune],[],[delete all non-checked-out branches "pr/<number>"\nand remotes "*-fork-for-pr-<number>" not used by other local branches],[prune])
+# ARG_OPTIONAL_ACTION([prune],[],[delete all non-checked-out branches "pr/<number>"\nand remotes "*-fork-for-pr-<number>" not used by other local branches. \nIf a "pr/<number>" branch is the current branch, switch to the default branch first],[prune])
 # ARG_POSITIONAL_SINGLE([prID],[PR number.\nRequired unless --prune is passed])
 # ARG_POSITIONAL_SINGLE([REMOTE],[GitHub remote that the PR targets],[origin])
 # ARG_POSITIONAL_DOUBLEDASH([])
@@ -81,7 +81,7 @@ print_help()
 {
     printf '%s\n' "Facility to fetch a read/write branch from a GitHub repo Pull Request (PR).
 "
-    printf 'Usage: %s [-h|--help] [-v|--version] [-p|--protocol <arg>] [-f|--(no-)force] [--prune] [--] <prID> [<REMOTE>]\n' "git prw"
+    printf 'Usage: %s [-h|--help] [-v|--version] [-p|--protocol <arg>] [-f|--(no-)force] [--prune] [--] <prID> [<REMOTE>]\n' "$(basename "$0")"
     printf '\t%s\n' "<prID>: PR number.
 		Required unless --prune is passed"
     printf '\t%s\n' "<REMOTE>: GitHub remote that the PR targets (default: 'origin')"
@@ -92,7 +92,8 @@ print_help()
 		By default, the same protocol is used as in REMOTE (no default)"
     printf '\t%s\n' "-f, --force, --no-force: overwrite the branch if it exists (off by default)"
     printf '\t%s\n' "--prune: delete all non-checked-out branches \"pr/<number>\"
-		and remotes \"*-fork-for-pr-<number>\" not used by other local branches"
+		and remotes \"*-fork-for-pr-<number>\" not used by other local branches.
+		If a \"pr/<number>\" branch is the current branch, switch to the default branch first"
     printf '\n%s\n' "$(description)"
 }
 
@@ -318,10 +319,43 @@ detect_protocol() {
     die "cannot detect protocol for '$remote_url'"
 }
 
+default_branch_name() {
+    # RETURN: guessed default branch name of the local repo
+
+    # https://stackoverflow.com/questions/28666357/how-to-get-default-git-branch
+
+    if git remote | grep -qFx origin; then
+        git symbolic-ref --short refs/remotes/origin/HEAD | cut -d / -f 2-
+        return 0
+    fi
+
+    local config_default;
+    config_default=$(git config --get init.defaultBranch)
+    # init.defaultBranch is new in Git 2.28.0
+    [[ -z $config_default ]] && config_default="master"
+
+    if git branch --list | cut -c 3- | grep -qFx "$config_default"; then
+        echo "$config_default"
+        return 0
+    fi
+
+    return 1
+}
+
 prune() {
     # XXX: change IFS=<...> + var=($(...)) into https://www.shellcheck.net/wiki/SC2207 pattern for Bash 3.x
     # if this function starts to call code that relies on IFS being the default
     local IFS=$'\n'
+
+    if [[ $(git branch --show-current) == pr/* ]]; then
+        local default_branch;
+        if default_branch=$(default_branch_name); then
+            git checkout "$default_branch"
+        else
+            echo "Unable to determine the default branch. Cannot switch off and delete the current branch '$(git branch --show-current)'"
+        fi
+    fi
+
     # shellcheck disable=SC2207
     local -a unchecked_pr_branches=($(git branch --list pr/\* | grep -Ex '^  pr/[0-9]+' | cut -c 3-))
     (( "${#unchecked_pr_branches[@]}" )) && git branch -D "${unchecked_pr_branches[@]}"
